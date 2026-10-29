@@ -1,0 +1,33 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getPayment, settlePayment, publicPayment } from "@/lib/payments";
+import { getMerchant } from "@/lib/merchants";
+import { notifyMerchant } from "@/lib/webhooks";
+import { resolveProvider } from "@/lib/providers";
+
+
+export async function POST(req: NextRequest) {
+  const { reference } = await req.json().catch(() => ({}));
+  if (!reference) return NextResponse.json({ error: "Missing reference" }, { status: 400 });
+
+  const payment = await getPayment(reference);
+  if (!payment) return NextResponse.json({ error: "Payment not found" }, { status: 404 });
+  if (payment.mode !== "test") {
+    return NextResponse.json({ error: "Not available" }, { status: 403 });
+  }
+
+  const provider = await resolveProvider(payment.mode as "test" | "live");
+  if (payment.status !== "pending") {
+    return NextResponse.json({ data: publicPayment(payment) });
+  }
+
+  const settled = await settlePayment(reference, {
+    status: "successful",
+    provider: provider.name,
+    providerReference: "sbx_sim_" + Date.now().toString(36),
+  });
+
+  const merchant = await getMerchant(payment.merchantId);
+  if (merchant && settled) void notifyMerchant(merchant, settled);
+
+  return NextResponse.json({ data: settled ? publicPayment(settled) : null });
+}

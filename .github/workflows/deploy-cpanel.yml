@@ -1,0 +1,54 @@
+name: Deploy Next.js to cPanel
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies and Build Next.js App
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare Standalone Build Structure
+        run: |
+          if [ -d "public" ]; then
+            cp -R public .next/standalone/public
+          fi
+          cp -R .next/static .next/standalone/.next/static
+          # Ship a DEPENDENCY-FREE package.json so an accidental cPanel "Run NPM
+          # Install" is a no-op instead of failing to git-clone the private SDK.
+          # The standalone server needs no runtime deps installed.
+          node -e "const p=require('./package.json');require('fs').writeFileSync('.next/standalone/package.json',JSON.stringify({name:p.name,version:p.version,private:true,scripts:{start:'node server.js'}},null,2))"
+
+      - name: Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.CPANEL_HOST }}
+          username: ${{ secrets.CPANEL_USERNAME }}
+          password: ${{ secrets.CPANEL_PASSWORD }}
+          server-dir: /
+          local-dir: .next/standalone/
+          # NEVER use dangerous-clean-slate: server-dir is the CloudLinux Node app
+          # root and wiping it deletes the Passenger-managed .htaccess, breaking the
+          # Node.js Selector. To reset a stale FTP state, delete
+          # `.ftp-deploy-sync-state.json` on the server once, then redeploy.
+          # DO NOT exclude node_modules: `output: standalone` ships a minimal,
+          # self-contained node_modules (next, react, sharp…) inside .next/standalone.
+          # Excluding it leaves the cPanel server without Next.js → 503.
+          exclude: |
+            **/.git*
